@@ -47,13 +47,16 @@ public:
 	u_short seq; /* application-specific sequence */
 };
 class HopInfo {
-	IPHeader router_ip_hdr;
-	ICMPHeader router_icmp_hdr;
-	IPHeader orig_ip_hdr;
-	ICMPHeader orig_icmp_hdr;
-	float RTO;
-	float sent_time;
-	float recvd_time;
+public:
+	IPHeader *router_ip_hdr;
+	ICMPHeader *router_icmp_hdr;
+	IPHeader *orig_ip_hdr;
+	ICMPHeader *orig_icmp_hdr;
+	double RTO; //in ms
+	double sent_time; //in ms
+	double recvd_time; //in ms
+	int probes_sent;
+	u_long ip;
 };
 /* now restore the previous packing state */
 #pragma pack (pop)
@@ -66,6 +69,10 @@ public:
 	u_short ip_checksum(u_short *buffer, int size);
 	void SendFirstSetofProbes();
 	void StartReceivingPackets();
+	double SetDynamicRTO(int index);
+	void RetxPackets();
+	void SendAndRecv(int index);
+	void PrintFinalResult();
 
 
 
