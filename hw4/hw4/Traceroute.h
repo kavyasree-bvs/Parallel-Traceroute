@@ -62,6 +62,14 @@ public:
 };
 /* now restore the previous packing state */
 #pragma pack (pop)
+class Parameters {
+public:
+	HANDLE mutex;
+	char* ip;
+	char* host;
+	u_long sourceip;
+	bool done;
+};
 class Traceroute {
 public:
 	Traceroute(char * dest);
@@ -77,7 +85,7 @@ public:
 	void StartReceiving();
 	char* LookupDNS(u_long ip);
 	//void ReceivePacketLoop();
-
+	void StartDNSThreads();
 	SOCKET sock;
 	struct sockaddr_in local;
 	// structure for connecting to server
@@ -86,4 +94,6 @@ public:
 	struct hostent *remote;
 	char* destName;
 	HopInfo hop_info[MAX_HOPS];
+	HANDLE handles[MAX_HOPS];
+	Parameters* dns_params[MAX_HOPS];
 };

@@ -3,11 +3,12 @@
 
 /*
 TODO:
-error codes handling
+error codes handling for routers
 dynamic rto calculation
 variable sized IP headers
 correct start times
 if possible send in parallel
+reverse dns lookup
 */
 
 /*
@@ -20,9 +21,11 @@ and wait for recvd pkts in loop
 #define DBG 0
 #define AVAILABLE_ZERO 1
 #define ECHO_REPLIED 2
+#define CONCURRENT 0
 
 double PCFreq = 0.0;
 __int64 CounterStart = 0;
+
 void StartCounter()
 {
 	LARGE_INTEGER li;
@@ -55,12 +58,17 @@ Traceroute::Traceroute(char* dest)
 		hop_info[i].RTO = -1;
 		hop_info[i].is_it_destination = false;
 	}
+
 	//StartReverseDNSThread();
 	StartCounter();
 	double start = GetCounter();
 	CreateSocket();	
 	LookupHost(dest);
+#if CONCURRENT
+	StartDNSThreads();
+#endif
 	SendFirstSetofProbes();
+	
 	/*
 	for (int i = 0; i < MAX_HOPS; i++)
 	{
@@ -70,12 +78,85 @@ Traceroute::Traceroute(char* dest)
 	StartReceiving();
 	RetxPackets();
 	RetxPackets();
+#if CONCURRENT
+	for (int i = 0; i < MAX_HOPS; i++)
+	{
+		WaitForSingleObject(dns_params[i]->mutex, INFINITE);
+		dns_params[i]->done = true;
+		ReleaseMutex(dns_params[i]->mutex);
+	}
+	for (int i = 0; i < MAX_HOPS; i++)
+	{
+		WaitForSingleObject(handles[i], INFINITE);
+		CloseHandle(handles[i]);
+	}
+#endif
 	PrintFinalResult();
 	printf("Total execution time: %.0f ms\n", GetCounter() - start);
 }
 
 Traceroute::~Traceroute()
 {
+}
+
+UINT reverseDNSLookup(LPVOID pParam)
+{
+	Parameters *p = (Parameters*)pParam; // shared parameters
+	bool flag = true;
+	while (flag)
+	{
+		//printf("loop started\n");
+#if 1
+		WaitForSingleObject(p->mutex, INFINITE);
+		//printf("update\n");
+		struct in_addr addr;
+		addr.S_un.S_addr = p->sourceip;
+		char* ip_dot_format = inet_ntoa(addr);
+		//char* host = getnamefromip(ip_dot_format);
+
+		/*https://stackoverflow.com/questions/10564525/resolve-ip-to-hostname*/
+		char hostname[260];
+		char service[260];
+
+		sockaddr_in address;
+		memset(&address, 0, sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = inet_addr(ip_dot_format);
+		int response = getnameinfo((sockaddr*)&address,
+			sizeof(address),
+			hostname,
+			260,
+			service,
+			260,
+			0);
+		p->ip = ip_dot_format;
+		if (response == 0)
+			p->host = hostname;
+		else
+			p->host = NULL;
+			//printf("ip %s host %s\n", p->ip, p->host);
+			if (p->done)
+				flag = false;
+		ReleaseMutex(p->mutex);
+#endif
+	}
+	return 0;
+	
+}
+
+void Traceroute::StartDNSThreads()
+{
+	for (int i = 0; i < MAX_HOPS; i++)
+	{
+		//printf("i %d ", i);
+		Parameters p;
+		p.mutex = CreateMutex(NULL, 0, NULL);
+		p.ip = NULL;
+		p.host = NULL;
+		handles[i]= CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)reverseDNSLookup, &p, 0, NULL);
+		dns_params[i] = &p;
+	}
+	return;
 }
 
 void Traceroute::CreateSocket()
@@ -183,7 +264,6 @@ double Traceroute::SetDynamicRTO(int index)
 	return DEFAULT_TIMEOUT;
 }
 
-#if 1
 int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyReceive)
 {
 #if DBG
@@ -327,6 +407,12 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 						hop_info[seq].RTO = en - st;
 						hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 						hop_info[seq].ip = router_ip_hdr->source_ip;
+#if CONCURRENT
+						WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
+						dns_params[seq]->sourceip = temp;
+						ReleaseMutex(dns_params[seq]->mutex);
+#endif
+						/**/
 #if AVAIL
 						printf("end-start %.3f ms\n", en - st);
 #endif
@@ -369,6 +455,12 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 						hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 						hop_info[seq].ip = router_ip_hdr->source_ip;
 						hop_info[seq].is_it_destination = true;
+#if CONCURRENT
+						WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
+						dns_params[seq]->sourceip = temp;
+						ReleaseMutex(dns_params[seq]->mutex);
+#endif
+						/**/
 #if AVAIL
 						printf("end-start %.3f ms\n", en - st);
 #endif
@@ -393,7 +485,6 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 	return 0;
 	
 }
-#endif
 
 void Traceroute::SendFirstSetofProbes()
 {
@@ -461,11 +552,46 @@ void Traceroute::PrintFinalResult()
 		}
 		else
 		{
+#if CONCURRENT
+			WaitForSingleObject(dns_params[i]->mutex, INFINITE);
+			if (dns_params[i]->host != NULL)
+				printf("%d <no DNS entry> (%s) %.3f ms (%d)\n", i + 1, dns_params[i]->ip, hop_info[i].RTO, hop_info[i].probes_sent);
+			else
+			{
+				printf("%d %s (%s) %.3f ms (%d)\n", i + 1, dns_params[i]->host, dns_params[i]->ip, hop_info[i].RTO, hop_info[i].probes_sent);
+			}
+			ReleaseMutex(dns_params[i]->mutex);
+#else
 			u_long temp = hop_info[i].ip;
 			struct in_addr addr;
 			addr.S_un.S_addr = temp;
 			char* ip_dot_format = inet_ntoa(addr);
-			printf("%d (%s)\t%.3f ms (%d)\n", i + 1, ip_dot_format, hop_info[i].RTO, hop_info[i].probes_sent);
+			//char* host = getnamefromip(ip_dot_format);
+
+			/*https://stackoverflow.com/questions/10564525/resolve-ip-to-hostname*/
+			char hostname[260];
+			char service[260];
+
+			sockaddr_in address;
+			memset(&address, 0, sizeof(address));
+			address.sin_family = AF_INET;
+			address.sin_addr.s_addr = inet_addr(ip_dot_format);
+			int response = getnameinfo((sockaddr*)&address,
+				sizeof(address),
+				hostname,
+				260,
+				service,
+				260,
+				0);
+			if (response != 0)
+				printf("%d <no DNS entry> (%s) %.3f ms (%d)\n", i + 1, ip_dot_format, hop_info[i].RTO, hop_info[i].probes_sent);
+			else
+			{
+				printf("%d %s (%s) %.3f ms (%d)\n", i + 1, hostname, ip_dot_format, hop_info[i].RTO, hop_info[i].probes_sent);
+			}
+#endif
+				
+			
 		}
 	}
 }
