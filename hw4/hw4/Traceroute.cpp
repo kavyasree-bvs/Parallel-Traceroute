@@ -19,7 +19,7 @@ and wait for recvd pkts in loop
 
 #define AVAIL 0
 #define DBG 0
-#define ONLY 1
+#define ONLY 0
 #define AVAILABLE_ZERO 1
 #define ECHO_REPLIED 2
 #define CONCURRENT 0
@@ -471,7 +471,7 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 					printf("end-start %.3f ms\n", en - st);
 #endif
 					//printf("reply received");
-					return ECHO_REPLIED;
+					//return ECHO_REPLIED;
 				}
 			}
 			else if(iResult < 56)
@@ -512,7 +512,7 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 					printf("end-start %.3f ms\n", en - st);
 #endif
 					//printf("reply received");
-					return ECHO_REPLIED;
+					//return ECHO_REPLIED;
 				}
 			}
 #if 0
@@ -561,9 +561,9 @@ void Traceroute::StartReceiving()
 	while (true)
 	{
 		//if echo reply then break the loop
-		int ret = SendAndRecv(0, true, false, true);
+		int ret = SendAndRecv(-1, true, false, true);
 		//printf("ret %d\n", ret);
-		if (ret == ECHO_REPLIED)
+		if (ret == AVAILABLE_ZERO)
 		{
 			//printf("echo reply here\n");
 			break;
@@ -590,7 +590,9 @@ void Traceroute::RetxPackets()
 			//send packet
 			//increase probe count
 			//update sent time
-			int ret = SendAndRecv(count, false, true, true);
+			int ret = SendAndRecv(count, false, true, false);
+			ret = SendAndRecv(count, false, false, true);
+			printf("retx ret val %d\n", ret);
 		}
 	}
 }
