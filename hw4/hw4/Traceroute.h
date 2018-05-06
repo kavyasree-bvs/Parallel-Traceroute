@@ -58,6 +58,7 @@ public:
 	double recvd_time; //in ms
 	int probes_sent;
 	u_long ip;
+	bool is_it_destination;
 };
 /* now restore the previous packing state */
 #pragma pack (pop)

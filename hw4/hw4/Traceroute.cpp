@@ -47,6 +47,7 @@ Traceroute::Traceroute(char* dest)
 		hop_info[i].recvd_time = -1;
 		hop_info[i].probes_sent = 0;
 		hop_info[i].RTO = -1;
+		hop_info[i].is_it_destination = false;
 	}
 	//StartReverseDNSThread();
 	StartCounter();
@@ -348,6 +349,7 @@ void Traceroute::SendAndRecv(int count, bool first)
 					hop_info[seq].RTO = en - st;
 					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 					hop_info[seq].ip = router_ip_hdr->source_ip;
+					hop_info[seq].is_it_destination = true;
 #if AVAIL
 					printf("end-start %.3f ms\n", en - st);
 					return;
@@ -389,12 +391,15 @@ void Traceroute::RetxPackets()
 #if DBG
 	printf("\nRetxPackets entry\n");
 #endif
-	for (int i = 0; i < MAX_HOPS; i++)
+	bool flag = true;
+	for (int i = 0; i < MAX_HOPS && flag; i++)
 	{
 		//printf("i %d rto %f\n", i, hop_info[i].RTO);
-		if (hop_info[i].probes_sent < 3 && hop_info[i].RTO < 0)
+		if (hop_info[i].is_it_destination)
+			flag = false;
+		if (hop_info[i].probes_sent < 3 && hop_info[i].RTO < 0 )
 		{
-			//printf("here");
+			//printf("count %d here\n", i+1);
 			int count = i + 1;
 			//send packet
 			//increase probe count
@@ -406,9 +411,12 @@ void Traceroute::RetxPackets()
 
 void Traceroute::PrintFinalResult()
 {
-	for (int i = 0; i < MAX_HOPS; i++)
+	bool flag = true;
+	for (int i = 0; i < MAX_HOPS && flag; i++)
 	{
-		if (hop_info[i].RTO < 0)
+		if (hop_info[i].is_it_destination)
+			flag = false;
+		if (hop_info[i].RTO < 0 )
 		{
 			printf("%d *\n", i + 1);
 		}
