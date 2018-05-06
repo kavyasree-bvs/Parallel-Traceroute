@@ -59,6 +59,9 @@ public:
 	int probes_sent;
 	u_long ip;
 	bool is_it_destination;
+	bool is_errors;
+	u_char error_type;
+	u_char error_code;
 };
 /* now restore the previous packing state */
 #pragma pack (pop)

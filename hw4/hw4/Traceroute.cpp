@@ -4,12 +4,17 @@
 /*
 TODO:
 error codes handling for routers
-dynamic rto calculation
-variable sized IP headers
+	dynamic rto calculation
+	variable sized IP headers
 correct start times
 if possible send in parallel
-reverse dns lookup
+	reverse dns lookup
+Exit threads as soon as dns lookup is done
+
+incorrect rtt due to mismatch seq maybe
+or not ending the threads sooner
 */
+
 
 /*
 Approach:
@@ -58,9 +63,9 @@ Traceroute::Traceroute(char* dest)
 		hop_info[i].probes_sent = 0;
 		hop_info[i].RTO = -1;
 		hop_info[i].is_it_destination = false;
+		hop_info[i].is_errors = false;
 	}
 
-	//StartReverseDNSThread();
 	StartCounter();
 	double start = GetCounter();
 	CreateSocket();	
@@ -425,9 +430,10 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 						// take router_ip_hdr->source_ip and
 						//printf("\tip %d\n", router_ip_hdr->source_ip);
 						u_long temp = (router_ip_hdr->source_ip);
-						u_char *a = (u_char*)&temp;
+						
 						int seq = orig_icmp_hdr->seq - 1;
 #if AVAIL
+						u_char *a = (u_char*)&temp;
 						printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
 #endif
 #if 0
@@ -439,7 +445,7 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 						st = hop_info[seq].sent_time;
 						en = hop_info[seq].recvd_time;
 						hop_info[seq].RTO = en - st;
-						hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+						//hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 						hop_info[seq].ip = router_ip_hdr->source_ip;
 #if CONCURRENT
 						WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
@@ -462,9 +468,10 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 					//printf("reached final destination\n\n\n");
 					//printf("reached final destination\n\n\n");
 					u_long temp = (router_ip_hdr->source_ip);
-					u_char *a = (u_char*)&temp;
+					
 					int seq = orig_icmp_hdr->seq - 1;
 #if AVAIL
+					u_char *a = (u_char*)&temp;
 					printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
 #endif
 #if DBG
@@ -475,7 +482,7 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 					st = hop_info[seq].sent_time;
 					en = hop_info[seq].recvd_time;
 					hop_info[seq].RTO = en - st;
-					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+					//hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 					hop_info[seq].ip = router_ip_hdr->source_ip;
 					hop_info[seq].is_it_destination = true;
 #if CONCURRENT
@@ -500,11 +507,12 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 				{
 					//printf("reached final destination\n\n\n");
 					u_long temp = (router_ip_hdr->source_ip);
-					u_char *a = (u_char*)&temp;
 					
 					//error here
 					int seq = router_icmp_hdr->seq - 1;
 #if AVAIL
+					u_char *a = (u_char*)&temp;
+
 					printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
 #endif
 #if 0
@@ -516,7 +524,7 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 					st = hop_info[seq].sent_time;
 					en = hop_info[seq].recvd_time;
 					hop_info[seq].RTO = en - st;
-					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+					//hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 					hop_info[seq].ip = router_ip_hdr->source_ip;
 					hop_info[seq].is_it_destination = true;
 #if CONCURRENT
@@ -532,13 +540,28 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 					//return ECHO_REPLIED;
 				}
 			}
-#if 0
+#if 1
 			//error checking for invalid code and types
 			else
 			{
 				if (orig_ip_hdr->proto == 1 && orig_icmp_hdr->id == (u_short)GetCurrentProcessId() && iResult >= 56)
 				{
-
+					u_long temp = (router_ip_hdr->source_ip);
+					//printf("LOL router_icmp_hdr seq %d code %d type %d \n", router_icmp_hdr->seq, router_icmp_hdr->code, router_icmp_hdr->type);
+					int seq = router_icmp_hdr->seq - 1;
+					hop_info[seq].recvd_time = GetCounter();
+					double st, en;
+					st = hop_info[seq].sent_time;
+					en = hop_info[seq].recvd_time;
+					hop_info[seq].RTO = en - st;
+					//hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+					hop_info[seq].ip = router_ip_hdr->source_ip;
+					hop_info[seq].is_errors = true;
+#if CONCURRENT
+					WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
+					dns_params[seq]->sourceip = temp;
+					ReleaseMutex(dns_params[seq]->mutex);
+#endif
 				}
 			}
 #endif
@@ -616,7 +639,7 @@ void Traceroute::RetxPackets()
 
 void Traceroute::PrintFinalResult()
 {
-	printf("printing final result\n");
+	//printf("printing final result\n");
 	bool flag = true;
 	for (int i = 0; i < MAX_HOPS && flag; i++)
 	{
@@ -624,7 +647,15 @@ void Traceroute::PrintFinalResult()
 			flag = false;
 		if (hop_info[i].RTO < 0 )
 		{
-			printf("%d *\n", i + 1);
+			//WaitForSingleObject(dns_params[i]->mutex, INFINITE);
+			if (hop_info[i].is_errors)
+			{
+				WaitForSingleObject(dns_params[i]->mutex, INFINITE);
+				printf("%d * (%s) other error: code %d, type %d\n", i + 1, dns_params[i]->ip, hop_info[i].error_code, hop_info[i].error_type);
+				ReleaseMutex(dns_params[i]->mutex);
+			}
+			else
+				printf("%d *\n", i + 1);
 		}
 		else
 		{
@@ -679,8 +710,6 @@ void Traceroute::PrintFinalResult()
 				printf("%d %s (%s) %.3f ms (%d)\n", i + 1, hostname, ip_dot_format, hop_info[i].RTO, hop_info[i].probes_sent);
 			}
 #endif
-				
-			
 		}
 	}
 }
