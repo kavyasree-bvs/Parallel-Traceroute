@@ -19,6 +19,7 @@ and wait for recvd pkts in loop
 
 #define AVAIL 0
 #define DBG 0
+#define ONLY 1
 #define AVAILABLE_ZERO 1
 #define ECHO_REPLIED 2
 #define CONCURRENT 0
@@ -83,6 +84,7 @@ Traceroute::Traceroute(char* dest)
 	{
 		WaitForSingleObject(dns_params[i]->mutex, INFINITE);
 		dns_params[i]->done = true;
+		printf("i %d done signaling\n", i);
 		ReleaseMutex(dns_params[i]->mutex);
 	}
 	for (int i = 0; i < MAX_HOPS; i++)
@@ -105,10 +107,10 @@ UINT reverseDNSLookup(LPVOID pParam)
 	bool flag = true;
 	while (flag)
 	{
-		//printf("loop started\n");
+		printf("loop started\n");
 #if 1
 		WaitForSingleObject(p->mutex, INFINITE);
-		//printf("update\n");
+		printf("update\n");
 		struct in_addr addr;
 		addr.S_un.S_addr = p->sourceip;
 		char* ip_dot_format = inet_ntoa(addr);
@@ -134,9 +136,13 @@ UINT reverseDNSLookup(LPVOID pParam)
 			p->host = hostname;
 		else
 			p->host = NULL;
-			//printf("ip %s host %s\n", p->ip, p->host);
-			if (p->done)
-				flag = false;
+		
+		printf("ip %s host %s\n", p->ip, p->host);
+		if (p->done) {
+			flag = false;
+			printf("done obtained");
+		}
+			
 		ReleaseMutex(p->mutex);
 #endif
 	}
@@ -344,7 +350,7 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 			tp.tv_sec = (long)initialRTO;
 			tp.tv_usec = (long)(initialRTO - (long)initialRTO) * 1000 * 1000;
 		}
-#if DBG
+#if ONLY
 		printf("initialRTO %ld sec %ld microsec \n", tp.tv_sec, tp.tv_usec);
 #endif
 
@@ -381,6 +387,16 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 			printf("router_icmp_hdr->type %d\n", (router_icmp_hdr->type));
 #endif
 			// check if this is TTL_expired; make sure packet size >= 56 bytes
+#if ONLY
+			if (iResult >= 28)
+			{
+				printf("LOL router_icmp_hdr seq %d code %d type %d \n", router_icmp_hdr->seq, router_icmp_hdr->code, router_icmp_hdr->type);
+			}
+			if (iResult >= 56)
+			{
+				printf("HEHE orig_icmp_hdr seq %d code %d type %d \n\n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+			}
+#endif
 			if (router_icmp_hdr->type == ICMP_TTL_EXPIRED && router_icmp_hdr->code == 0 && iResult >= 56)
 			{
 				/*https://tools.ietf.org/html/rfc790*/
@@ -397,8 +413,9 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 #if AVAIL
 						printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
 #endif
-#if DBG
+#if 0
 						printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+						
 #endif
 						double st, en;
 						hop_info[seq].recvd_time = GetCounter();
@@ -425,50 +442,90 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 			{
 				if (orig_ip_hdr->proto == 1 && orig_icmp_hdr->id == (u_short)GetCurrentProcessId())
 				{
-					printf("reached final destination\n\n\n");
+					//printf("reached final destination\n\n\n");
+					//printf("reached final destination\n\n\n");
+					u_long temp = (router_ip_hdr->source_ip);
+					u_char *a = (u_char*)&temp;
+					int seq = orig_icmp_hdr->seq - 1;
+#if AVAIL
+					printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
+#endif
+#if DBG
+					//printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+#endif
+					double st, en;
+					hop_info[seq].recvd_time = GetCounter();
+					st = hop_info[seq].sent_time;
+					en = hop_info[seq].recvd_time;
+					hop_info[seq].RTO = en - st;
+					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+					hop_info[seq].ip = router_ip_hdr->source_ip;
+					hop_info[seq].is_it_destination = true;
+#if CONCURRENT
+					WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
+					dns_params[seq]->sourceip = temp;
+					ReleaseMutex(dns_params[seq]->mutex);
+#endif
+					/**/
+#if AVAIL
+					printf("end-start %.3f ms\n", en - st);
+#endif
+					//printf("reply received");
+					return ECHO_REPLIED;
 				}
 			}
-			else
+			else if(iResult < 56)
 			{
-				if (iResult < 56)
-				{
 					//only router icmp and ip hdrs are present
 					//determine if it is echo reply
 					//and obtain the source ip
-					if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0)
-					{
-						//printf("reached final destination\n\n\n");
-						u_long temp = (router_ip_hdr->source_ip);
-						u_char *a = (u_char*)&temp;
-						int seq = orig_icmp_hdr->seq - 1;
+				if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0)
+				{
+					//printf("reached final destination\n\n\n");
+					u_long temp = (router_ip_hdr->source_ip);
+					u_char *a = (u_char*)&temp;
+					
+					//error here
+					int seq = router_icmp_hdr->seq - 1;
 #if AVAIL
-						printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
+					printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
 #endif
-#if DBG
-						printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+#if 0
+					printf("router_icmp_hdr seq %d code %d type %d \n", router_icmp_hdr->seq, router_icmp_hdr->code, router_icmp_hdr->type);
+					//printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
 #endif
-						double st, en;
-						hop_info[seq].recvd_time = GetCounter();
-						st = hop_info[seq].sent_time;
-						en = hop_info[seq].recvd_time;
-						hop_info[seq].RTO = en - st;
-						hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
-						hop_info[seq].ip = router_ip_hdr->source_ip;
-						hop_info[seq].is_it_destination = true;
+					double st, en;
+					hop_info[seq].recvd_time = GetCounter();
+					st = hop_info[seq].sent_time;
+					en = hop_info[seq].recvd_time;
+					hop_info[seq].RTO = en - st;
+					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+					hop_info[seq].ip = router_ip_hdr->source_ip;
+					hop_info[seq].is_it_destination = true;
 #if CONCURRENT
-						WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
-						dns_params[seq]->sourceip = temp;
-						ReleaseMutex(dns_params[seq]->mutex);
+					WaitForSingleObject(dns_params[seq]->mutex, INFINITE);
+					dns_params[seq]->sourceip = temp;
+					ReleaseMutex(dns_params[seq]->mutex);
 #endif
-						/**/
+					/**/
 #if AVAIL
-						printf("end-start %.3f ms\n", en - st);
+					printf("end-start %.3f ms\n", en - st);
 #endif
-						return ECHO_REPLIED;
-					}
+					//printf("reply received");
+					return ECHO_REPLIED;
 				}
 			}
+#if 0
+			//error checking for invalid code and types
+			else
+			{
+				if (orig_ip_hdr->proto == 1 && orig_icmp_hdr->id == (u_short)GetCurrentProcessId() && iResult >= 56)
+				{
+
+				}
 			}
+#endif
+		}
 		else if (available == 0)
 		{
 			//probe count of seq no++;
@@ -483,7 +540,6 @@ int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyRecei
 		}
 	}
 	return 0;
-	
 }
 
 void Traceroute::SendFirstSetofProbes()
@@ -529,7 +585,7 @@ void Traceroute::RetxPackets()
 			flag = false;
 		if (hop_info[i].probes_sent < 3 && hop_info[i].RTO < 0 )
 		{
-			//printf("\nretx count %d here\n", i+1);
+			printf("\nretx count %d here\n", i+1);
 			int count = i + 1;
 			//send packet
 			//increase probe count
