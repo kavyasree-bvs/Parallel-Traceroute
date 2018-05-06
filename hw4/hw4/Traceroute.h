@@ -76,8 +76,6 @@ public:
 	char* LookupDNS(u_long ip);
 	//void ReceivePacketLoop();
 
-
-
 	SOCKET sock;
 	struct sockaddr_in local;
 	// structure for connecting to server
@@ -86,7 +84,4 @@ public:
 	struct hostent *remote;
 	char* destName;
 	HopInfo hop_info[MAX_HOPS];
-
-
-
 };

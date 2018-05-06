@@ -5,6 +5,7 @@
 TODO:
 error codes handling
 dynamic rto calculation
+variable sized IP headers
 */
 
 /*
@@ -47,15 +48,16 @@ Traceroute::Traceroute(char* dest)
 		hop_info[i].probes_sent = 0;
 		hop_info[i].RTO = -1;
 	}
+	//StartReverseDNSThread();
 	StartCounter();
+	double start = GetCounter();
 	CreateSocket();	
 	LookupHost(dest);
 	SendFirstSetofProbes();
-#if 1	
 	RetxPackets();
 	RetxPackets();
 	PrintFinalResult();
-#endif
+	printf("Total execution time: %.0f ms\n", GetCounter() - start);
 }
 
 Traceroute::~Traceroute()
@@ -64,7 +66,9 @@ Traceroute::~Traceroute()
 
 void Traceroute::CreateSocket()
 {
+#if DBG
 	printf("CreateSocket entry\n");
+#endif
 	/* ready to create a socket */
 	sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 	if (sock == INVALID_SOCKET)
@@ -79,7 +83,9 @@ void Traceroute::CreateSocket()
 
 void Traceroute::LookupHost(char* destinationHost)
 {
+#if DBG
 	printf("LookupHost entry\n");
+#endif
 	memset(&local, 0, sizeof(local));
 	local.sin_family = AF_INET;
 	local.sin_addr.s_addr = INADDR_ANY;
@@ -87,7 +93,7 @@ void Traceroute::LookupHost(char* destinationHost)
 	
 	memset(&server, 0, sizeof(server));
 	server.sin_family = AF_INET;
-	server.sin_port = htons(MAGIC_PORT);
+	server.sin_port = htons(53);
 
 	DWORD IP_add = inet_addr(destinationHost);
 
@@ -206,7 +212,7 @@ void Traceroute::SendAndRecv(int count, bool first)
 		exit(-1);
 	}
 	// use regular sendto on the above socket
-	if (sendto(sock, (char*)send_buf, MAX_ICMP_SIZE, 0, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
+	if (sendto(sock, (char*)icmp, sizeof(ICMPHeader), 0, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
 	{
 		printf("failed sendto with %d\n", WSAGetLastError());
 		WSACleanup();
@@ -271,7 +277,9 @@ void Traceroute::SendAndRecv(int count, bool first)
 			WSACleanup();
 			exit(-1);
 		}
-		//printf("(router_icmp_hdr->type %d\n", (router_icmp_hdr->type));
+#if AVAIL
+		printf("router_icmp_hdr->type %d\n", (router_icmp_hdr->type));
+#endif
 		// check if this is TTL_expired; make sure packet size >= 56 bytes
 		if (router_icmp_hdr->type == ICMP_TTL_EXPIRED && router_icmp_hdr->code == 0 && iResult >= 56)
 		{
@@ -286,11 +294,12 @@ void Traceroute::SendAndRecv(int count, bool first)
 					u_long temp = (router_ip_hdr->source_ip);
 					u_char *a = (u_char*)&temp;
 					int seq = orig_icmp_hdr->seq - 1;
+#if AVAIL
 					printf("hop %d %d.%d.%d.%d ", seq+1, a[0], a[1], a[2], a[3]);
+#endif
 #if DBG
 					printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
 #endif
-					
 					double st, en;
 					hop_info[seq].recvd_time = GetCounter();
 					st = hop_info[seq].sent_time;
@@ -298,8 +307,9 @@ void Traceroute::SendAndRecv(int count, bool first)
 					hop_info[seq].RTO = en - st;
 					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
 					hop_info[seq].ip = router_ip_hdr->source_ip;
-					printf("start %.3f end %.3f end-start %.3f ms\n", st, en, en - st);
-
+#if AVAIL
+					printf("end-start %.3f ms\n", en - st);
+#endif
 					// initiate a DNS lookup
 					//break;
 				}
@@ -310,6 +320,39 @@ void Traceroute::SendAndRecv(int count, bool first)
 			if (orig_ip_hdr->proto == 1 && orig_icmp_hdr->id == (u_short)GetCurrentProcessId())
 			{
 				printf("reached final destination\n\n\n");
+			}
+		}
+		else
+		{
+			if (iResult < 56)
+			{
+				//only router icmp and ip hdrs are present
+				//determine if it is echo reply
+				//and obtain the source ip
+				if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0)
+				{
+					//printf("reached final destination\n\n\n");
+					u_long temp = (router_ip_hdr->source_ip);
+					u_char *a = (u_char*)&temp;
+					int seq = orig_icmp_hdr->seq - 1;
+#if AVAIL
+					printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
+#endif
+#if DBG
+					printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+#endif
+					double st, en;
+					hop_info[seq].recvd_time = GetCounter();
+					st = hop_info[seq].sent_time;
+					en = hop_info[seq].recvd_time;
+					hop_info[seq].RTO = en - st;
+					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+					hop_info[seq].ip = router_ip_hdr->source_ip;
+#if AVAIL
+					printf("end-start %.3f ms\n", en - st);
+					return;
+#endif
+				}
 			}
 		}
 	}
