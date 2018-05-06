@@ -66,8 +66,8 @@ class Parameters {
 public:
 	HANDLE mutex;
 	char* ip;
-	char* host;
-	u_long sourceip;
+	std::string host;
+	u_long sourceip = 0;
 	bool done;
 };
 class Traceroute {

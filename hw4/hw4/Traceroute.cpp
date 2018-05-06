@@ -22,7 +22,7 @@ and wait for recvd pkts in loop
 #define ONLY 0
 #define AVAILABLE_ZERO 1
 #define ECHO_REPLIED 2
-#define CONCURRENT 0
+#define CONCURRENT 1
 
 double PCFreq = 0.0;
 __int64 CounterStart = 0;
@@ -84,11 +84,13 @@ Traceroute::Traceroute(char* dest)
 	{
 		WaitForSingleObject(dns_params[i]->mutex, INFINITE);
 		dns_params[i]->done = true;
-		printf("i %d done signaling\n", i);
+		//printf("i %d done signaling\n", i);
 		ReleaseMutex(dns_params[i]->mutex);
 	}
 	for (int i = 0; i < MAX_HOPS; i++)
 	{
+		//printf("closing");
+		//printf("i %d closing\n", i);
 		WaitForSingleObject(handles[i], INFINITE);
 		CloseHandle(handles[i]);
 	}
@@ -107,42 +109,54 @@ UINT reverseDNSLookup(LPVOID pParam)
 	bool flag = true;
 	while (flag)
 	{
-		printf("loop started\n");
+		//printf("loop started\n");
 #if 1
 		WaitForSingleObject(p->mutex, INFINITE);
-		printf("update\n");
-		struct in_addr addr;
-		addr.S_un.S_addr = p->sourceip;
-		char* ip_dot_format = inet_ntoa(addr);
-		//char* host = getnamefromip(ip_dot_format);
+		if (p->sourceip > 0)
+		{
+			//printf("update\n");
+			struct in_addr addr;
+			addr.S_un.S_addr = p->sourceip;
+			char* ip_dot_format = inet_ntoa(addr);
+			//char* host = getnamefromip(ip_dot_format);
 
-		/*https://stackoverflow.com/questions/10564525/resolve-ip-to-hostname*/
-		char hostname[260];
-		char service[260];
+			/*https://stackoverflow.com/questions/10564525/resolve-ip-to-hostname*/
+			char hostname[260];
+			char service[260];
 
-		sockaddr_in address;
-		memset(&address, 0, sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = inet_addr(ip_dot_format);
-		int response = getnameinfo((sockaddr*)&address,
-			sizeof(address),
-			hostname,
-			260,
-			service,
-			260,
-			0);
-		p->ip = ip_dot_format;
-		if (response == 0)
-			p->host = hostname;
-		else
-			p->host = NULL;
-		
-		printf("ip %s host %s\n", p->ip, p->host);
+			sockaddr_in address;
+			memset(&address, 0, sizeof(address));
+			address.sin_family = AF_INET;
+			address.sin_addr.s_addr = inet_addr(ip_dot_format);
+			int response = getnameinfo((sockaddr*)&address,
+				sizeof(address),
+				hostname,
+				260,
+				service,
+				260,
+				0);
+			p->ip = ip_dot_format;
+			
+			if (response == 0)
+			{
+				//printf("hostname len %d\n", strlen(hostname));
+				
+				p->host = std::string(hostname);
+			}				
+			else
+			{
+				
+				std::string tep = "none";
+				p->host = tep;
+			}
+				
+
+			//printf("ip %s host %s\n", p->ip, p->host);
+		}
 		if (p->done) {
 			flag = false;
-			printf("done obtained");
+			//printf("done obtained\n");
 		}
-			
 		ReleaseMutex(p->mutex);
 #endif
 	}
@@ -155,12 +169,15 @@ void Traceroute::StartDNSThreads()
 	for (int i = 0; i < MAX_HOPS; i++)
 	{
 		//printf("i %d ", i);
-		Parameters p;
-		p.mutex = CreateMutex(NULL, 0, NULL);
-		p.ip = NULL;
-		p.host = NULL;
-		handles[i]= CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)reverseDNSLookup, &p, 0, NULL);
-		dns_params[i] = &p;
+		Parameters * p = new Parameters();
+		p->mutex = CreateMutex(NULL, 0, NULL);
+		p->ip = NULL;
+		char t[10] = "hello";
+		p->host = t;
+
+		dns_params[i] = p;
+		handles[i]= CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)reverseDNSLookup, p, 0, NULL);
+		
 	}
 	return;
 }
@@ -585,20 +602,21 @@ void Traceroute::RetxPackets()
 			flag = false;
 		if (hop_info[i].probes_sent < 3 && hop_info[i].RTO < 0 )
 		{
-			printf("\nretx count %d here\n", i+1);
+			//printf("\nretx count %d here\n", i+1);
 			int count = i + 1;
 			//send packet
 			//increase probe count
 			//update sent time
 			int ret = SendAndRecv(count, false, true, false);
 			ret = SendAndRecv(count, false, false, true);
-			printf("retx ret val %d\n", ret);
+			//printf("retx ret val %d\n", ret);
 		}
 	}
 }
 
 void Traceroute::PrintFinalResult()
 {
+	printf("printing final result\n");
 	bool flag = true;
 	for (int i = 0; i < MAX_HOPS && flag; i++)
 	{
@@ -611,12 +629,25 @@ void Traceroute::PrintFinalResult()
 		else
 		{
 #if CONCURRENT
+			//printf("i %d here\n", i);
 			WaitForSingleObject(dns_params[i]->mutex, INFINITE);
-			if (dns_params[i]->host != NULL)
+#if 0
+			if (dns_params[i]->host == "none")
+			{
+				printf("host is NULL");
+			}
+			else
+			{
+				//printf("not null len %d\n", strlen(dns_params[i]->host));
+				printf("\nhost %s\n", dns_params[i]->host.c_str());
+			}
+#endif
+			//printf("\n%s %s\n", dns_params[i]->host, dns_params[i]->ip);
+			if (dns_params[i]->host == "none" || strcmp(dns_params[i]->host.c_str(), dns_params[i]->ip)==0)
 				printf("%d <no DNS entry> (%s) %.3f ms (%d)\n", i + 1, dns_params[i]->ip, hop_info[i].RTO, hop_info[i].probes_sent);
 			else
 			{
-				printf("%d %s (%s) %.3f ms (%d)\n", i + 1, dns_params[i]->host, dns_params[i]->ip, hop_info[i].RTO, hop_info[i].probes_sent);
+				printf("%d %s (%s) %.3f ms (%d)\n", i + 1, dns_params[i]->host.c_str(), dns_params[i]->ip, hop_info[i].RTO, hop_info[i].probes_sent);
 			}
 			ReleaseMutex(dns_params[i]->mutex);
 #else
