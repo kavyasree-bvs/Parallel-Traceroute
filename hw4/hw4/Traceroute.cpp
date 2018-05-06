@@ -641,7 +641,7 @@ void Traceroute::PrintFinalResult()
 				service,
 				260,
 				0);
-			if (response != 0)
+			if(strcmp(ip_dot_format, hostname) == 0 || response != 0)
 				printf("%d <no DNS entry> (%s) %.3f ms (%d)\n", i + 1, ip_dot_format, hop_info[i].RTO, hop_info[i].probes_sent);
 			else
 			{
