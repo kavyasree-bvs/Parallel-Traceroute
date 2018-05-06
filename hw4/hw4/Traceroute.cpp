@@ -6,6 +6,8 @@ TODO:
 error codes handling
 dynamic rto calculation
 variable sized IP headers
+correct start times
+if possible send in parallel
 */
 
 /*
@@ -15,6 +17,10 @@ and wait for recvd pkts in loop
 */
 
 #define AVAIL 0
+#define DBG 0
+#define AVAILABLE_ZERO 1
+#define ECHO_REPLIED 2
+
 double PCFreq = 0.0;
 __int64 CounterStart = 0;
 void StartCounter()
@@ -55,6 +61,13 @@ Traceroute::Traceroute(char* dest)
 	CreateSocket();	
 	LookupHost(dest);
 	SendFirstSetofProbes();
+	/*
+	for (int i = 0; i < MAX_HOPS; i++)
+	{
+		hop_info[i].sent_time= GetCounter();
+	}
+	*/
+	StartReceiving();
 	RetxPackets();
 	RetxPackets();
 	PrintFinalResult();
@@ -171,204 +184,214 @@ double Traceroute::SetDynamicRTO(int index)
 }
 
 #if 1
-void Traceroute::SendAndRecv(int count, bool first)
+int Traceroute::SendAndRecv(int count, bool first, bool onlySend, bool onlyReceive)
 {
 #if DBG
 	printf("SendAndRecv entry\n");
 #endif
-	// buffer for the ICMP header
-	u_char send_buf[MAX_ICMP_SIZE]; /* IP header is not present here */
-	ICMPHeader *icmp = (ICMPHeader *)send_buf;
+	if (onlySend)
+	{
+		// buffer for the ICMP header
+		u_char send_buf[MAX_ICMP_SIZE]; /* IP header is not present here */
+		ICMPHeader *icmp = (ICMPHeader *)send_buf;
 
-	// set up the echo request
-	// no need to flip the byte order
-	icmp->type = ICMP_ECHO_REQUEST;
-	icmp->code = 0;
+		// set up the echo request
+		// no need to flip the byte order
+		icmp->type = ICMP_ECHO_REQUEST;
+		icmp->code = 0;
 
-	// set up ID/SEQ fields as needed
-	//...
-	// set up optional fields as needed
-	icmp->id = (u_short)GetCurrentProcessId();
-	icmp->seq = count;
+		// set up ID/SEQ fields as needed
+		//...
+		// set up optional fields as needed
+		icmp->id = (u_short)GetCurrentProcessId();
+		icmp->seq = count;
 
-	// initialize checksum to zero
-	icmp->checksum = 0;
-	/* calculate the checksum */
-	int packet_size = sizeof(ICMPHeader); // 8 bytes
-	icmp->checksum = ip_checksum((u_short *)send_buf, packet_size);
+		// initialize checksum to zero
+		icmp->checksum = 0;
+		/* calculate the checksum */
+		int packet_size = sizeof(ICMPHeader); // 8 bytes
+		icmp->checksum = ip_checksum((u_short *)send_buf, packet_size);
 
-	// set proper TTL
-	int ttl = count;
+		// set proper TTL
+		int ttl = count;
 #if DBG
-	printf("\nttl %d icmp->type %d icmp->code %d icmp->seq %d\n", ttl, icmp->type, icmp->code, icmp->seq);
+		printf("\nttl %d icmp->type %d icmp->code %d icmp->seq %d\n", ttl, icmp->type, icmp->code, icmp->seq);
 #endif
-	// need Ws2tcpip.h for IP_TTL, which is equal to 4; there is another constant with the same
-	// name in multicast headers – do not use it!
-	if (setsockopt(sock, IPPROTO_IP, IP_TTL, (const char *)&ttl, sizeof(ttl)) == SOCKET_ERROR)
-	{
-		printf("setsockopt failed with %d\n", WSAGetLastError());
-		closesocket(sock);
-		// some cleanup
-		WSACleanup();
-		exit(-1);
-	}
-	// use regular sendto on the above socket
-	if (sendto(sock, (char*)icmp, sizeof(ICMPHeader), 0, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
-	{
-		printf("failed sendto with %d\n", WSAGetLastError());
-		WSACleanup();
-		exit(-1);
-	}
-	hop_info[count - 1].probes_sent++;
-	hop_info[count - 1].sent_time = GetCounter();
-	
-	fd_set fd;
-	FD_ZERO(&fd);
-	FD_SET(sock, &fd);
-	timeval tp;
-	
-	double initialRTO;
-	if(first)
-		initialRTO = DEFAULT_TIMEOUT;//in ms
-	else
-		initialRTO = SetDynamicRTO(count - 1);
-		
-	initialRTO = initialRTO / 1000;
-
-	if (initialRTO<1.0)
-	{
-		tp.tv_sec = 0;
-		tp.tv_usec = (long)(initialRTO * 1000 * 1000);
-	}
-	else
-	{
-		tp.tv_sec = (long)initialRTO;
-		tp.tv_usec = (long)(initialRTO - (long)initialRTO) * 1000 * 1000;
-	}
-#if DBG
-	printf("initialRTO %ld s %ld microsec \n", tp.tv_sec, tp.tv_usec);
-#endif
-
-	struct sockaddr_in response;
-	int size = sizeof(response);
-
-	u_char rec_buf[MAX_REPLY_SIZE]; /* this buffer starts with an IP header */
-	IPHeader *router_ip_hdr = (IPHeader *)rec_buf;
-	ICMPHeader *router_icmp_hdr = (ICMPHeader *)(router_ip_hdr + 1);
-	IPHeader *orig_ip_hdr = (IPHeader *)(router_icmp_hdr + 1);
-	ICMPHeader *orig_icmp_hdr = (ICMPHeader *)(orig_ip_hdr + 1);
-
-	int available = select(0, &fd, NULL, NULL, &tp);
-#if AVAIL
-	printf("select available %d\n", available);
-#endif
-
-	int iResult = 0;
-
-	if (available > 0)
-	{
-		iResult = recvfrom(sock, (char*)&rec_buf, MAX_REPLY_SIZE, 0, (struct sockaddr*)&response, &size);
-#if AVAIL
-		printf("iResult %d\n", iResult);
-#endif
-		if (iResult == SOCKET_ERROR)
+		// need Ws2tcpip.h for IP_TTL, which is equal to 4; there is another constant with the same
+		// name in multicast headers – do not use it!
+		if (setsockopt(sock, IPPROTO_IP, IP_TTL, (const char *)&ttl, sizeof(ttl)) == SOCKET_ERROR)
 		{
-			//error processing
-			printf("failed recvfrom with %d\n", WSAGetLastError());
+			printf("setsockopt failed with %d\n", WSAGetLastError());
+			closesocket(sock);
+			// some cleanup
 			WSACleanup();
 			exit(-1);
 		}
-#if AVAIL
-		printf("router_icmp_hdr->type %d\n", (router_icmp_hdr->type));
-#endif
-		// check if this is TTL_expired; make sure packet size >= 56 bytes
-		if (router_icmp_hdr->type == ICMP_TTL_EXPIRED && router_icmp_hdr->code == 0 && iResult >= 56)
+		// use regular sendto on the above socket
+		hop_info[count - 1].sent_time = GetCounter();
+		hop_info[count - 1].probes_sent++;
+
+		if (sendto(sock, (char*)icmp, sizeof(ICMPHeader), 0, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
 		{
-			/*https://tools.ietf.org/html/rfc790*/
-			if (orig_ip_hdr->proto == 1)//ICMP)
-			{
-				// check if process ID matches
-				if (orig_icmp_hdr->id == (u_short)GetCurrentProcessId())
-				{
-					// take router_ip_hdr->source_ip and
-					//printf("\tip %d\n", router_ip_hdr->source_ip);
-					u_long temp = (router_ip_hdr->source_ip);
-					u_char *a = (u_char*)&temp;
-					int seq = orig_icmp_hdr->seq - 1;
-#if AVAIL
-					printf("hop %d %d.%d.%d.%d ", seq+1, a[0], a[1], a[2], a[3]);
-#endif
-#if DBG
-					printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
-#endif
-					double st, en;
-					hop_info[seq].recvd_time = GetCounter();
-					st = hop_info[seq].sent_time;
-					en = hop_info[seq].recvd_time;
-					hop_info[seq].RTO = en - st;
-					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
-					hop_info[seq].ip = router_ip_hdr->source_ip;
-#if AVAIL
-					printf("end-start %.3f ms\n", en - st);
-#endif
-					// initiate a DNS lookup
-					//break;
-				}
-			}
+			printf("failed sendto with %d\n", WSAGetLastError());
+			WSACleanup();
+			exit(-1);
 		}
-		else if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0 && iResult >= 56)
+	}
+	
+	if (onlyReceive)
+	{
+		fd_set fd;
+		FD_ZERO(&fd);
+		FD_SET(sock, &fd);
+		timeval tp;
+
+		double initialRTO;
+		if (first)
+			initialRTO = DEFAULT_TIMEOUT;//in ms
+		else
+			initialRTO = SetDynamicRTO(count - 1);
+
+		initialRTO = initialRTO / 1000;
+
+		if (initialRTO<1.0)
 		{
-			if (orig_ip_hdr->proto == 1 && orig_icmp_hdr->id == (u_short)GetCurrentProcessId())
-			{
-				printf("reached final destination\n\n\n");
-			}
+			tp.tv_sec = 0;
+			tp.tv_usec = (long)(initialRTO * 1000 * 1000);
 		}
 		else
 		{
-			if (iResult < 56)
-			{
-				//only router icmp and ip hdrs are present
-				//determine if it is echo reply
-				//and obtain the source ip
-				if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0)
-				{
-					//printf("reached final destination\n\n\n");
-					u_long temp = (router_ip_hdr->source_ip);
-					u_char *a = (u_char*)&temp;
-					int seq = orig_icmp_hdr->seq - 1;
+			tp.tv_sec = (long)initialRTO;
+			tp.tv_usec = (long)(initialRTO - (long)initialRTO) * 1000 * 1000;
+		}
+#if DBG
+		printf("initialRTO %ld sec %ld microsec \n", tp.tv_sec, tp.tv_usec);
+#endif
+
+		struct sockaddr_in response;
+		int size = sizeof(response);
+
+		u_char rec_buf[MAX_REPLY_SIZE]; /* this buffer starts with an IP header */
+		IPHeader *router_ip_hdr = (IPHeader *)rec_buf;
+		ICMPHeader *router_icmp_hdr = (ICMPHeader *)(router_ip_hdr + 1);
+		IPHeader *orig_ip_hdr = (IPHeader *)(router_icmp_hdr + 1);
+		ICMPHeader *orig_icmp_hdr = (ICMPHeader *)(orig_ip_hdr + 1);
+
+		int available = select(0, &fd, NULL, NULL, &tp);
 #if AVAIL
-					printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
+		printf("select available %d\n", available);
+#endif
+
+		int iResult = 0;
+
+		if (available > 0)
+		{
+			iResult = recvfrom(sock, (char*)&rec_buf, MAX_REPLY_SIZE, 0, (struct sockaddr*)&response, &size);
+#if AVAIL
+			printf("iResult %d\n", iResult);
+#endif
+			if (iResult == SOCKET_ERROR)
+			{
+				//error processing
+				printf("failed recvfrom with %d\n", WSAGetLastError());
+				WSACleanup();
+				exit(-1);
+			}
+#if AVAIL
+			printf("router_icmp_hdr->type %d\n", (router_icmp_hdr->type));
+#endif
+			// check if this is TTL_expired; make sure packet size >= 56 bytes
+			if (router_icmp_hdr->type == ICMP_TTL_EXPIRED && router_icmp_hdr->code == 0 && iResult >= 56)
+			{
+				/*https://tools.ietf.org/html/rfc790*/
+				if (orig_ip_hdr->proto == 1)//ICMP)
+				{
+					// check if process ID matches
+					if (orig_icmp_hdr->id == (u_short)GetCurrentProcessId())
+					{
+						// take router_ip_hdr->source_ip and
+						//printf("\tip %d\n", router_ip_hdr->source_ip);
+						u_long temp = (router_ip_hdr->source_ip);
+						u_char *a = (u_char*)&temp;
+						int seq = orig_icmp_hdr->seq - 1;
+#if AVAIL
+						printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
 #endif
 #if DBG
-					printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+						printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
 #endif
-					double st, en;
-					hop_info[seq].recvd_time = GetCounter();
-					st = hop_info[seq].sent_time;
-					en = hop_info[seq].recvd_time;
-					hop_info[seq].RTO = en - st;
-					hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
-					hop_info[seq].ip = router_ip_hdr->source_ip;
-					hop_info[seq].is_it_destination = true;
+						double st, en;
+						hop_info[seq].recvd_time = GetCounter();
+						st = hop_info[seq].sent_time;
+						en = hop_info[seq].recvd_time;
+						hop_info[seq].RTO = en - st;
+						hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+						hop_info[seq].ip = router_ip_hdr->source_ip;
 #if AVAIL
-					printf("end-start %.3f ms\n", en - st);
-					return;
+						printf("end-start %.3f ms\n", en - st);
 #endif
+						// initiate a DNS lookup
+						//break;
+					}
 				}
 			}
+			else if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0 && iResult >= 56)
+			{
+				if (orig_ip_hdr->proto == 1 && orig_icmp_hdr->id == (u_short)GetCurrentProcessId())
+				{
+					printf("reached final destination\n\n\n");
+				}
+			}
+			else
+			{
+				if (iResult < 56)
+				{
+					//only router icmp and ip hdrs are present
+					//determine if it is echo reply
+					//and obtain the source ip
+					if (router_icmp_hdr->type == ICMP_ECHO_REPLY && router_icmp_hdr->code == 0)
+					{
+						//printf("reached final destination\n\n\n");
+						u_long temp = (router_ip_hdr->source_ip);
+						u_char *a = (u_char*)&temp;
+						int seq = orig_icmp_hdr->seq - 1;
+#if AVAIL
+						printf("hop %d %d.%d.%d.%d ", seq + 1, a[0], a[1], a[2], a[3]);
+#endif
+#if DBG
+						printf("orig_icmp_hdr seq %d code %d type %d \n", orig_icmp_hdr->seq, orig_icmp_hdr->code, orig_icmp_hdr->type);
+#endif
+						double st, en;
+						hop_info[seq].recvd_time = GetCounter();
+						st = hop_info[seq].sent_time;
+						en = hop_info[seq].recvd_time;
+						hop_info[seq].RTO = en - st;
+						hop_info[seq].orig_icmp_hdr = orig_icmp_hdr;
+						hop_info[seq].ip = router_ip_hdr->source_ip;
+						hop_info[seq].is_it_destination = true;
+#if AVAIL
+						printf("end-start %.3f ms\n", en - st);
+#endif
+						return ECHO_REPLIED;
+					}
+				}
+			}
+			}
+		else if (available == 0)
+		{
+			//probe count of seq no++;
+			//i++;
+			return AVAILABLE_ZERO;
+		}
+		else if (available < 0)
+		{
+			printf("failed with %d on recv\n", WSAGetLastError());
+			WSACleanup();
+			exit(-1);
 		}
 	}
-	else if (available == 0)
-	{
-		//probe count of seq no++;
-		//i++;
-	}
-	else if (available < 0)
-	{
-		printf("failed with %d on recv\n", WSAGetLastError());
-		WSACleanup();
-		exit(-1);
-	}
+	return 0;
+	
 }
 #endif
 
@@ -379,11 +402,27 @@ void Traceroute::SendFirstSetofProbes()
 #endif
 	for (int count = 1; count <= MAX_HOPS; count++)
 	{
-		SendAndRecv(count, true);
+		int ret = SendAndRecv(count, true, true, false);
 	}
 #if DBG
 	printf("SendFirstSetofProbes exit %f \n", GetCounter());
 #endif
+}
+
+void Traceroute::StartReceiving()
+{
+	while (true)
+	{
+		//if echo reply then break the loop
+		int ret = SendAndRecv(0, true, false, true);
+		//printf("ret %d\n", ret);
+		if (ret == ECHO_REPLIED)
+		{
+			//printf("echo reply here\n");
+			break;
+		}
+			
+	}
 }
 
 void Traceroute::RetxPackets()
@@ -399,12 +438,12 @@ void Traceroute::RetxPackets()
 			flag = false;
 		if (hop_info[i].probes_sent < 3 && hop_info[i].RTO < 0 )
 		{
-			//printf("count %d here\n", i+1);
+			//printf("\nretx count %d here\n", i+1);
 			int count = i + 1;
 			//send packet
 			//increase probe count
 			//update sent time
-			SendAndRecv(count, false);
+			int ret = SendAndRecv(count, false, true, true);
 		}
 	}
 }

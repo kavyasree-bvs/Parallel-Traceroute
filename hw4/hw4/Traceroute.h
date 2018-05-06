@@ -72,8 +72,9 @@ public:
 	void SendFirstSetofProbes();
 	double SetDynamicRTO(int index);
 	void RetxPackets();
-	void SendAndRecv(int index, bool first);
+	int SendAndRecv(int count, bool first, bool onlySend, bool onlyReceive);
 	void PrintFinalResult();
+	void StartReceiving();
 	char* LookupDNS(u_long ip);
 	//void ReceivePacketLoop();
 
