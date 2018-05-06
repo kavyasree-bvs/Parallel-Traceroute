@@ -17,6 +17,7 @@
 #define ICMP_ECHO_REQUEST 8
 
 #define MAX_HOPS 30
+#define DEFAULT_TIMEOUT 500
 
 
 /* remember the current packing state */
@@ -68,11 +69,12 @@ public:
 	void LookupHost(char* destinationHost);
 	u_short ip_checksum(u_short *buffer, int size);
 	void SendFirstSetofProbes();
-	void StartReceivingPackets();
 	double SetDynamicRTO(int index);
 	void RetxPackets();
-	void SendAndRecv(int index);
+	void SendAndRecv(int index, bool first);
 	void PrintFinalResult();
+	char* LookupDNS(u_long ip);
+	//void ReceivePacketLoop();
 
 
 
